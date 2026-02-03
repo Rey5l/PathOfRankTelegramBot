@@ -1,0 +1,1 @@
+"""RPG Telegram bot package."""
