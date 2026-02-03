@@ -29,8 +29,11 @@ class FighterState:
     max_hp: int
 
 
-def apply_stamina(action: str, stamina: int) -> int:
-    delta = STAMINA_COSTS.get(action, 0)
+def apply_stamina(action: str, stamina: int, override_cost: int | None = None) -> int:
+    if override_cost is not None:
+        delta = -abs(override_cost)
+    else:
+        delta = STAMINA_COSTS.get(action, 0)
     return clamp_stamina(stamina + delta)
 
 
@@ -64,13 +67,22 @@ def process_pve_turn(
     monster_behavior: str,
     battle_turn: int,
     position: str,
+    player_bonus: dict,
+    monster_bonus: dict,
+    player_status_text: str,
+    monster_status_text: str,
+    combo_text: str,
+    player_skill_cost: int | None,
+    monster_skill_cost: int | None,
+    player_skill_multiplier: float,
+    monster_skill_multiplier: float,
 ) -> tuple[str, str, int, int, int, int, bool, bool, str]:
     monster_action = choose_monster_action(
         monster_behavior, monster.hp, monster.max_hp, monster.stamina
     )
 
-    player.stamina = apply_stamina(player_action, player.stamina)
-    monster.stamina = apply_stamina(monster_action, monster.stamina)
+    player.stamina = apply_stamina(player_action, player.stamina, player_skill_cost)
+    monster.stamina = apply_stamina(monster_action, monster.stamina, monster_skill_cost)
 
     player_damage = compute_damage(
         atk=player.atk,
@@ -81,7 +93,11 @@ def process_pve_turn(
         attacker_stamina=player.stamina,
         defender_luck=monster.luck,
         position=position,
-        skill_multiplier=1.5 if player_action == SKILL else 1.0,
+        ignore_def_pct=player_bonus.get("ignore_def_pct", 0.0),
+        bonus_damage_pct=player_bonus.get("damage_pct", 0.0),
+        bonus_crit_pct=player_bonus.get("crit_pct", 0.0),
+        bonus_dodge_pct=monster_bonus.get("dodge_pct", 0.0),
+        skill_multiplier=player_skill_multiplier if player_action == SKILL else 1.0,
     )
     monster_damage = compute_damage(
         atk=monster.atk,
@@ -92,7 +108,11 @@ def process_pve_turn(
         attacker_stamina=monster.stamina,
         defender_luck=player.luck,
         position=position,
-        skill_multiplier=1.3 if monster_action == SKILL else 1.0,
+        ignore_def_pct=monster_bonus.get("ignore_def_pct", 0.0),
+        bonus_damage_pct=monster_bonus.get("damage_pct", 0.0),
+        bonus_crit_pct=monster_bonus.get("crit_pct", 0.0),
+        bonus_dodge_pct=player_bonus.get("dodge_pct", 0.0),
+        skill_multiplier=monster_skill_multiplier if monster_action == SKILL else 1.0,
     )
 
     monster.hp = max(0, monster.hp - player_damage.damage)
@@ -103,6 +123,9 @@ def process_pve_turn(
         templates.round_header(battle_turn),
         templates.round_separator(),
         f"🧍 Дистанция: {templates.distance_visual(position)}",
+        f"⚡ STA: Игрок {player.stamina} | Монстр {monster.stamina}",
+        f"🧪 Эффекты: Игрок {player_status_text} | Монстр {monster_status_text}",
+        combo_text,
         f"🧝 Игрок -> {templates.action_label(player_action)} | 👹 Монстр -> {templates.action_label(monster_action)}",
         f"📍 Позиция: {templates.position_label(position)} → {templates.position_label(new_position)}",
         _roll_damage_log("Игрок", player_damage),
@@ -131,9 +154,18 @@ def process_pvp_turn(
     enemy: FighterState,
     battle_turn: int,
     position: str,
+    player_bonus: dict,
+    enemy_bonus: dict,
+    player_status_text: str,
+    enemy_status_text: str,
+    combo_text: str,
+    player_skill_cost: int | None,
+    enemy_skill_cost: int | None,
+    player_skill_multiplier: float,
+    enemy_skill_multiplier: float,
 ) -> tuple[str, str, int, int, int, int, bool, bool, str]:
-    player.stamina = apply_stamina(player_action, player.stamina)
-    enemy.stamina = apply_stamina(enemy_action, enemy.stamina)
+    player.stamina = apply_stamina(player_action, player.stamina, player_skill_cost)
+    enemy.stamina = apply_stamina(enemy_action, enemy.stamina, enemy_skill_cost)
 
     player_damage = compute_damage(
         atk=player.atk,
@@ -144,7 +176,11 @@ def process_pvp_turn(
         attacker_stamina=player.stamina,
         defender_luck=enemy.luck,
         position=position,
-        skill_multiplier=1.5 if player_action == SKILL else 1.0,
+        ignore_def_pct=player_bonus.get("ignore_def_pct", 0.0),
+        bonus_damage_pct=player_bonus.get("damage_pct", 0.0),
+        bonus_crit_pct=player_bonus.get("crit_pct", 0.0),
+        bonus_dodge_pct=enemy_bonus.get("dodge_pct", 0.0),
+        skill_multiplier=player_skill_multiplier if player_action == SKILL else 1.0,
     )
     enemy_damage = compute_damage(
         atk=enemy.atk,
@@ -155,7 +191,11 @@ def process_pvp_turn(
         attacker_stamina=enemy.stamina,
         defender_luck=player.luck,
         position=position,
-        skill_multiplier=1.5 if enemy_action == SKILL else 1.0,
+        ignore_def_pct=enemy_bonus.get("ignore_def_pct", 0.0),
+        bonus_damage_pct=enemy_bonus.get("damage_pct", 0.0),
+        bonus_crit_pct=enemy_bonus.get("crit_pct", 0.0),
+        bonus_dodge_pct=player_bonus.get("dodge_pct", 0.0),
+        skill_multiplier=enemy_skill_multiplier if enemy_action == SKILL else 1.0,
     )
 
     # ±10% randomness for PVP balance
@@ -170,6 +210,9 @@ def process_pvp_turn(
         templates.round_header(battle_turn),
         templates.round_separator(),
         f"🧍 Дистанция: {templates.distance_visual(position)}",
+        f"⚡ STA: Игрок {player.stamina} | Противник {enemy.stamina}",
+        f"🧪 Эффекты: Игрок {player_status_text} | Противник {enemy_status_text}",
+        combo_text,
         f"🧝 Игрок -> {templates.action_label(player_action)} | 🧟 Противник -> {templates.action_label(enemy_action)}",
         f"📍 Позиция: {templates.position_label(position)} → {templates.position_label(new_position)}",
         _roll_damage_log("Игрок", player_damage),

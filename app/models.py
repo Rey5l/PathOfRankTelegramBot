@@ -17,6 +17,7 @@ class Player:
     defense: int
     luck: int
     current_battle_id: Optional[int]
+    title: Optional[str] = None
 
 
 @dataclass
@@ -44,6 +45,10 @@ class Skill:
     rarity: str
     hidden: int
     description: str
+    effects_json: str
+    combo_tags_json: str
+    level: int = 1
+    copies: int = 0
 
 
 @dataclass
@@ -74,3 +79,7 @@ class Battle:
     enemy_hp: int
     enemy_stamina: int
     position: str
+    player_skill_id: Optional[int]
+    enemy_skill_id: Optional[int]
+    player_combo_json: str
+    enemy_combo_json: str

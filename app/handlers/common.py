@@ -55,8 +55,10 @@ async def cmd_me(message: Message) -> None:
         return
     next_xp = xp_to_next_level(player.level)
     xp_left = max(0, next_xp - player.xp)
+    title_text = f"🎖 Титул: {player.title}\n" if player.title else ""
     text = (
         f"🧝 Профиль {player.username}\n"
+        f"{title_text}"
         f"🏅 Ранг: {player.rank}\n"
         f"⭐ Уровень: {player.level} | XP: {player.xp}/{next_xp} (до уровня: {xp_left})\n"
         f"💰 Золото: {player.gold}\n"

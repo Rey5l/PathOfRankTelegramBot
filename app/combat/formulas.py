@@ -79,12 +79,13 @@ def apply_counter_rules(
     return DamageResult(damage=damage, is_crit=False, was_miss=False, dodge_chance=0.0)
 
 
-def apply_crit(damage: int, luck: int, position: str) -> DamageResult:
+def apply_crit(damage: int, luck: int, position: str, bonus_crit: float = 0.0) -> DamageResult:
     crit_chance = luck * 0.005
     if position == "close":
         crit_chance += 0.05
     elif position == "far":
         crit_chance -= 0.03
+    crit_chance += bonus_crit
     crit_chance = max(0.0, min(0.5, crit_chance))
     if random.random() < crit_chance:
         return DamageResult(
@@ -93,11 +94,12 @@ def apply_crit(damage: int, luck: int, position: str) -> DamageResult:
     return DamageResult(damage=damage, is_crit=False, was_miss=False, dodge_chance=0.0)
 
 
-def roll_dodge(defender_luck: int, defender_action: str, position: str) -> float:
+def roll_dodge(defender_luck: int, defender_action: str, position: str, bonus_dodge: float = 0.0) -> float:
     base = 0.05 + defender_luck * 0.003
     if defender_action == DODGE:
         base += 0.25
     base += position_dodge_bonus(position)
+    base += bonus_dodge
     return max(0.0, min(0.6, base))
 
 
@@ -110,25 +112,32 @@ def compute_damage(
     attacker_stamina: int,
     defender_luck: int,
     position: str,
+    ignore_def_pct: float = 0.0,
+    bonus_damage_pct: float = 0.0,
+    bonus_crit_pct: float = 0.0,
+    bonus_dodge_pct: float = 0.0,
     skill_multiplier: float = 1.0,
 ) -> DamageResult:
-    damage = base_damage(atk, defense)
+    effective_def = int(defense * (1 - ignore_def_pct / 100))
+    damage = base_damage(atk, max(0, effective_def))
     if attacker_action == SKILL:
         damage = int(damage * skill_multiplier)
     damage = int(damage * position_damage_modifier(position, attacker_action))
+    if bonus_damage_pct:
+        damage = int(damage * (1 + bonus_damage_pct / 100))
     damage = apply_stamina_penalty(damage, attacker_stamina)
 
     counter_result = apply_counter_rules(damage, attacker_action, defender_action)
     if counter_result.was_miss:
         return counter_result
 
-    dodge_chance = roll_dodge(defender_luck, defender_action, position)
+    dodge_chance = roll_dodge(defender_luck, defender_action, position, bonus_dodge_pct / 100)
     if random.random() < dodge_chance:
         return DamageResult(
             damage=0, is_crit=False, was_miss=True, dodge_chance=dodge_chance
         )
 
-    crit_result = apply_crit(counter_result.damage, attacker_luck, position)
+    crit_result = apply_crit(counter_result.damage, attacker_luck, position, bonus_crit_pct / 100)
     return DamageResult(
         damage=crit_result.damage,
         is_crit=crit_result.is_crit,

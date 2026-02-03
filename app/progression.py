@@ -13,7 +13,7 @@ def xp_to_next_level(level: int) -> int:
 
 
 def rank_from_level(level: int) -> str:
-    step = min((level - 1) // 5, (len(RANK_LETTERS) * SUBRANKS_PER_LETTER) - 1)
+    step = min((level - 1) // 2, (len(RANK_LETTERS) * SUBRANKS_PER_LETTER) - 1)
     letter = RANK_LETTERS[step // SUBRANKS_PER_LETTER]
     plus_count = step % SUBRANKS_PER_LETTER
     return f"{letter}{'+' * plus_count}"

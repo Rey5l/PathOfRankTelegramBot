@@ -32,7 +32,10 @@ def init_db(db_path: str) -> None:
             attack INTEGER NOT NULL,
             defense INTEGER NOT NULL,
             luck INTEGER NOT NULL,
-            current_battle_id INTEGER
+            current_battle_id INTEGER,
+            title TEXT,
+            wins_pve INTEGER NOT NULL DEFAULT 0,
+            cases_opened INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -84,7 +87,9 @@ def init_db(db_path: str) -> None:
             effect TEXT NOT NULL,
             rarity TEXT NOT NULL,
             hidden INTEGER NOT NULL DEFAULT 0,
-            description TEXT NOT NULL
+            description TEXT NOT NULL,
+            effects_json TEXT NOT NULL DEFAULT '[]',
+            combo_tags_json TEXT NOT NULL DEFAULT '[]'
         )
         """
     )
@@ -96,6 +101,20 @@ def init_db(db_path: str) -> None:
             chat_id INTEGER NOT NULL,
             message_id INTEGER NOT NULL,
             created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS battle_effects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            battle_id INTEGER NOT NULL,
+            target TEXT NOT NULL,
+            effect_type TEXT NOT NULL,
+            value REAL NOT NULL,
+            duration INTEGER NOT NULL,
+            stacks INTEGER NOT NULL,
+            max_stacks INTEGER NOT NULL
         )
         """
     )
@@ -125,6 +144,29 @@ def init_db(db_path: str) -> None:
     )
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS achievements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            title TEXT,
+            case_reward TEXT,
+            case_qty INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_achievements (
+            player_id INTEGER NOT NULL,
+            achievement_id INTEGER NOT NULL,
+            unlocked_at TEXT NOT NULL,
+            PRIMARY KEY (player_id, achievement_id)
+        )
+        """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS app_meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -134,7 +176,10 @@ def init_db(db_path: str) -> None:
     _ensure_battle_columns(conn)
     _ensure_skill_columns(conn)
     _ensure_player_skills_table(conn)
+    _ensure_player_skills_columns(conn)
     _ensure_case_columns(conn)
+    _ensure_battle_effect_columns(conn)
+    _ensure_player_columns(conn)
     conn.commit()
     seed_data(conn)
     _dedupe_skills_by_name(conn)
@@ -151,6 +196,22 @@ def _ensure_battle_columns(conn: sqlite3.Connection) -> None:
         cursor.execute(
             "ALTER TABLE battles ADD COLUMN position TEXT NOT NULL DEFAULT 'medium'"
         )
+    if "player_skill_id" not in columns:
+        cursor.execute(
+            "ALTER TABLE battles ADD COLUMN player_skill_id INTEGER"
+        )
+    if "enemy_skill_id" not in columns:
+        cursor.execute(
+            "ALTER TABLE battles ADD COLUMN enemy_skill_id INTEGER"
+        )
+    if "player_combo_json" not in columns:
+        cursor.execute(
+            "ALTER TABLE battles ADD COLUMN player_combo_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "enemy_combo_json" not in columns:
+        cursor.execute(
+            "ALTER TABLE battles ADD COLUMN enemy_combo_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def _ensure_skill_columns(conn: sqlite3.Connection) -> None:
@@ -164,6 +225,8 @@ def _ensure_skill_columns(conn: sqlite3.Connection) -> None:
         "rarity": "TEXT NOT NULL DEFAULT 'COMMON'",
         "hidden": "INTEGER NOT NULL DEFAULT 0",
         "description": "TEXT NOT NULL DEFAULT ''",
+        "effects_json": "TEXT NOT NULL DEFAULT '[]'",
+        "combo_tags_json": "TEXT NOT NULL DEFAULT '[]'",
     }
     for name, ddl in required.items():
         if name not in columns:
@@ -178,10 +241,34 @@ def _ensure_player_skills_table(conn: sqlite3.Connection) -> None:
             player_id INTEGER NOT NULL,
             skill_id INTEGER NOT NULL,
             is_unlocked INTEGER NOT NULL DEFAULT 1,
+            level INTEGER NOT NULL DEFAULT 1,
+            copies INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (player_id, skill_id)
         )
         """
     )
+
+
+def _ensure_player_skills_columns(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(player_skills)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    if "level" not in columns:
+        cursor.execute("ALTER TABLE player_skills ADD COLUMN level INTEGER NOT NULL DEFAULT 1")
+    if "copies" not in columns:
+        cursor.execute("ALTER TABLE player_skills ADD COLUMN copies INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_player_columns(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(players)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    if "title" not in columns:
+        cursor.execute("ALTER TABLE players ADD COLUMN title TEXT")
+    if "wins_pve" not in columns:
+        cursor.execute("ALTER TABLE players ADD COLUMN wins_pve INTEGER NOT NULL DEFAULT 0")
+    if "cases_opened" not in columns:
+        cursor.execute("ALTER TABLE players ADD COLUMN cases_opened INTEGER NOT NULL DEFAULT 0")
 
 
 def _ensure_case_columns(conn: sqlite3.Connection) -> None:
@@ -190,6 +277,14 @@ def _ensure_case_columns(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in cursor.fetchall()}
     if "price" not in columns:
         cursor.execute("ALTER TABLE cases ADD COLUMN price INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_battle_effect_columns(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(battle_effects)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    if not columns:
+        return
 
 
 def seed_data(conn: sqlite3.Connection) -> None:
@@ -503,12 +598,14 @@ def seed_data(conn: sqlite3.Connection) -> None:
     cursor.executemany(
         """
         INSERT OR IGNORE INTO skills
-        (name, type, stamina_cost, damage_multiplier, range, effect, rarity, hidden, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (name, type, stamina_cost, damage_multiplier, range, effect, rarity, hidden, description, effects_json, combo_tags_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        skills,
+        [(*skill, "[]", "[]") if len(skill) == 9 else skill for skill in skills],
     )
     conn.commit()
+    _seed_skill_effects(conn)
+    _seed_achievements(conn)
     _assign_defaults_to_existing_players(conn)
     _seed_cases(conn)
 
@@ -520,6 +617,206 @@ def _assign_defaults_to_existing_players(conn: sqlite3.Connection) -> None:
     for player_id in player_ids:
         assign_default_skills(conn, player_id)
         grant_case(conn, player_id, "Novice Case", 1)
+
+
+def _seed_skill_effects(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    effects = {
+        "Power Strike": (
+            json.dumps(
+                [{"type": "stun", "value": 1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["STARTER"]),
+        ),
+        "Twin Slash": (
+            json.dumps(
+                [{"type": "bleed", "value": 5, "duration": 2, "stacks": 1, "max_stacks": 2, "target": "enemy"}]
+            ),
+            json.dumps(["LINK"]),
+        ),
+        "Piercing Shot": (
+            json.dumps(
+                [{"type": "ignore_def", "value": 20, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["STARTER"]),
+        ),
+        "Whirlwind": (
+            json.dumps(
+                [{"type": "def_down", "value": 10, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["LINK"]),
+        ),
+        "Seismic удар": (
+            json.dumps(
+                [{"type": "move", "value": 1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Shadow Lunge": (
+            json.dumps(
+                [{"type": "move", "value": -1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["STARTER", "MOTION"]),
+        ),
+        "Iron Wall": (
+            json.dumps(
+                [{"type": "def_up", "value": 30, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Mirror Guard": (
+            json.dumps(
+                [{"type": "def_up", "value": 20, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Evasion Step": (
+            json.dumps(
+                [{"type": "dodge_up", "value": 15, "duration": 2, "stacks": 1, "max_stacks": 2, "target": "self"},
+                 {"type": "move", "value": 1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["MOTION"]),
+        ),
+        "Fortress Stance": (
+            json.dumps(
+                [{"type": "crit_down", "value": 100, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Second Wind": (
+            json.dumps(
+                [{"type": "stamina_restore", "value": 25, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["SUPPORT"]),
+        ),
+        "Battle Focus": (
+            json.dumps(
+                [{"type": "dodge_up", "value": 10, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "self"},
+                 {"type": "crit_up", "value": 10, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["LINK"]),
+        ),
+        "Smoke Bomb": (
+            json.dumps(
+                [{"type": "move", "value": 1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["MOTION"]),
+        ),
+        "Blazing Uppercut": (
+            json.dumps(
+                [{"type": "dodge_down", "value": 10, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["STARTER"]),
+        ),
+        "Frost Lance": (
+            json.dumps(
+                [{"type": "dodge_down", "value": 10, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["LINK", "CONTROL"]),
+        ),
+        "Ranger Volley": (
+            json.dumps(
+                [{"type": "move", "value": 1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["MOTION"]),
+        ),
+        "Crimson Edge": (
+            json.dumps(
+                [{"type": "bleed", "value": 6, "duration": 3, "stacks": 1, "max_stacks": 2, "target": "enemy"}]
+            ),
+            json.dumps(["FINISH"]),
+        ),
+        "Meteor Break": (
+            json.dumps(
+                [{"type": "def_down", "value": 20, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "enemy"}]
+            ),
+            json.dumps(["FINISH"]),
+        ),
+        "Aegis Shift": (
+            json.dumps(
+                [{"type": "def_up", "value": 10, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["SUPPORT"]),
+        ),
+        "Steel Pulse": (
+            json.dumps(
+                [{"type": "def_up", "value": 10, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Guardian Halo": (
+            json.dumps(
+                [{"type": "def_up", "value": 40, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Void Bastion": (
+            json.dumps(
+                [{"type": "def_up", "value": 20, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["CONTROL"]),
+        ),
+        "Quick Reset": (
+            json.dumps(
+                [{"type": "stamina_restore", "value": 15, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"},
+                 {"type": "crit_up", "value": 5, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["LINK"]),
+        ),
+        "Adrenal Rush": (
+            json.dumps(
+                [{"type": "move", "value": -1, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"},
+                 {"type": "damage_up", "value": 15, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["STARTER", "MOTION"]),
+        ),
+        "Arcane Surge": (
+            json.dumps(
+                [{"type": "stamina_restore", "value": 30, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"},
+                 {"type": "dodge_up", "value": 10, "duration": 2, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["SUPPORT"]),
+        ),
+        "Eclipse Pact": (
+            json.dumps(
+                [{"type": "stamina_restore", "value": -1000, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"},
+                 {"type": "crit_up", "value": 30, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"},
+                 {"type": "damage_up", "value": 20, "duration": 1, "stacks": 1, "max_stacks": 1, "target": "self"}]
+            ),
+            json.dumps(["FINISH"]),
+        ),
+    }
+    for name, (effects_json, combo_json) in effects.items():
+        cursor.execute(
+            """
+            UPDATE skills
+            SET effects_json = ?, combo_tags_json = ?
+            WHERE name = ? AND (effects_json = '[]' OR combo_tags_json = '[]')
+            """,
+            (effects_json, combo_json, name),
+        )
+    conn.commit()
+
+
+def _seed_achievements(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM achievements")
+    if cursor.fetchone()["cnt"] > 0:
+        return
+    achievements = [
+        ("first_win", "Первая кровь", "Победить в бою 1 раз.", "Боец", "Novice Case", 1),
+        ("level_5", "Страж", "Достичь 5 уровня.", "Страж", "Hunter Case", 1),
+        ("level_10", "Ветеран", "Достичь 10 уровня.", "Ветеран", "Champion Case", 1),
+        ("cases_5", "Коллекционер", "Открыть 5 кейсов.", "Коллекционер", "Novice Case", 2),
+    ]
+    cursor.executemany(
+        """
+        INSERT INTO achievements (code, name, description, title, case_reward, case_qty)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        achievements,
+    )
+    conn.commit()
 
 
 def _seed_cases(conn: sqlite3.Connection) -> None:
@@ -631,10 +928,46 @@ def assign_default_skills(conn: sqlite3.Connection, player_id: int) -> None:
     skill_ids = _list_skills_by_level(conn, row["level"])
     cursor.executemany(
         """
-        INSERT OR IGNORE INTO player_skills (player_id, skill_id, is_unlocked)
-        VALUES (?, ?, 1)
+        INSERT OR IGNORE INTO player_skills (player_id, skill_id, is_unlocked, level, copies)
+        VALUES (?, ?, 1, 1, 0)
         """,
         [(player_id, skill_id) for skill_id in skill_ids],
+    )
+    conn.commit()
+
+
+def apply_skill_reward(conn: sqlite3.Connection, player_id: int, skill_id: int) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT level, copies FROM player_skills
+        WHERE player_id = ? AND skill_id = ?
+        """,
+        (player_id, skill_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute(
+            """
+            INSERT INTO player_skills (player_id, skill_id, is_unlocked, level, copies)
+            VALUES (?, ?, 1, 1, 0)
+            """,
+            (player_id, skill_id),
+        )
+        conn.commit()
+        return
+    copies = row["copies"] + 1
+    level = row["level"]
+    while copies >= 3:
+        copies -= 3
+        level += 1
+    cursor.execute(
+        """
+        UPDATE player_skills
+        SET level = ?, copies = ?
+        WHERE player_id = ? AND skill_id = ?
+        """,
+        (level, copies, player_id, skill_id),
     )
     conn.commit()
 
@@ -671,8 +1004,8 @@ def resync_player_skills_by_level(conn: sqlite3.Connection) -> None:
         skill_ids = _list_skills_by_level(conn, row["level"])
         cursor.executemany(
             """
-            INSERT INTO player_skills (player_id, skill_id, is_unlocked)
-            VALUES (?, ?, 1)
+            INSERT INTO player_skills (player_id, skill_id, is_unlocked, level, copies)
+            VALUES (?, ?, 1, 1, 0)
             """,
             [(player_id, skill_id) for skill_id in skill_ids],
         )
@@ -700,6 +1033,74 @@ def _maybe_resync_skills(conn: sqlite3.Connection) -> None:
         return
     resync_player_skills_by_level(conn)
     _set_meta(conn, "skills_resynced", "1")
+
+
+def _increment_cases_opened(conn: sqlite3.Connection, player_id: int, delta: int) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE players SET cases_opened = cases_opened + ? WHERE id = ?",
+        (delta, player_id),
+    )
+    conn.commit()
+
+
+def increment_wins(conn: sqlite3.Connection, player_id: int, delta: int) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE players SET wins_pve = wins_pve + ? WHERE id = ?",
+        (delta, player_id),
+    )
+    conn.commit()
+    _check_and_award_achievements(conn, player_id)
+
+
+def _check_and_award_achievements(conn: sqlite3.Connection, player_id: int) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT level, wins_pve, cases_opened FROM players WHERE id = ?",
+        (player_id,),
+    )
+    player = cursor.fetchone()
+    if not player:
+        return
+    cursor.execute("SELECT * FROM achievements")
+    achievements = cursor.fetchall()
+    for ach in achievements:
+        cursor.execute(
+            """
+            SELECT 1 FROM player_achievements
+            WHERE player_id = ? AND achievement_id = ?
+            """,
+            (player_id, ach["id"]),
+        )
+        if cursor.fetchone():
+            continue
+        unlock = False
+        if ach["code"] == "first_win" and player["wins_pve"] >= 1:
+            unlock = True
+        elif ach["code"] == "level_5" and player["level"] >= 5:
+            unlock = True
+        elif ach["code"] == "level_10" and player["level"] >= 10:
+            unlock = True
+        elif ach["code"] == "cases_5" and player["cases_opened"] >= 5:
+            unlock = True
+        if not unlock:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO player_achievements (player_id, achievement_id, unlocked_at)
+            VALUES (?, ?, ?)
+            """,
+            (player_id, ach["id"], datetime.now(timezone.utc).isoformat()),
+        )
+        if ach["title"]:
+            cursor.execute(
+                "UPDATE players SET title = ? WHERE id = ?",
+                (ach["title"], player_id),
+            )
+        if ach["case_reward"] and ach["case_qty"] > 0:
+            grant_case(conn, player_id, ach["case_reward"], ach["case_qty"])
+    conn.commit()
 
 
 def _dedupe_skills_by_name(conn: sqlite3.Connection) -> None:
@@ -816,8 +1217,9 @@ def create_pve_battle(
     cursor.execute(
         """
         INSERT INTO battles (type, turn, player_action, enemy_action, log, status, player_id, monster_id,
-                             enemy_player_id, player_hp, player_stamina, enemy_hp, enemy_stamina, position)
-        VALUES ('PVE', 1, NULL, NULL, '', 'active', ?, ?, NULL, ?, ?, ?, ?, 'medium')
+                             enemy_player_id, player_hp, player_stamina, enemy_hp, enemy_stamina, position,
+                             player_skill_id, enemy_skill_id, player_combo_json, enemy_combo_json)
+        VALUES ('PVE', 1, NULL, NULL, '', 'active', ?, ?, NULL, ?, ?, ?, ?, 'medium', NULL, NULL, '{}', '{}')
         """,
         (
             player.id,
@@ -841,8 +1243,9 @@ def create_pvp_battle(
     cursor.execute(
         """
         INSERT INTO battles (type, turn, player_action, enemy_action, log, status, player_id, monster_id,
-                             enemy_player_id, player_hp, player_stamina, enemy_hp, enemy_stamina, position)
-        VALUES ('PVP', 1, NULL, NULL, '', 'active', ?, NULL, ?, ?, ?, ?, ?, 'medium')
+                             enemy_player_id, player_hp, player_stamina, enemy_hp, enemy_stamina, position,
+                             player_skill_id, enemy_skill_id, player_combo_json, enemy_combo_json)
+        VALUES ('PVP', 1, NULL, NULL, '', 'active', ?, NULL, ?, ?, ?, ?, ?, 'medium', NULL, NULL, '{}', '{}')
         """,
         (
             player.id,
@@ -866,7 +1269,8 @@ def update_battle(conn: sqlite3.Connection, battle: Battle) -> None:
         """
         UPDATE battles
         SET turn = ?, player_action = ?, enemy_action = ?, log = ?, status = ?,
-            player_hp = ?, player_stamina = ?, enemy_hp = ?, enemy_stamina = ?, position = ?
+            player_hp = ?, player_stamina = ?, enemy_hp = ?, enemy_stamina = ?, position = ?,
+            player_skill_id = ?, enemy_skill_id = ?, player_combo_json = ?, enemy_combo_json = ?
         WHERE id = ?
         """,
         (
@@ -880,6 +1284,10 @@ def update_battle(conn: sqlite3.Connection, battle: Battle) -> None:
             battle.enemy_hp,
             battle.enemy_stamina,
             battle.position,
+            battle.player_skill_id,
+            battle.enemy_skill_id,
+            battle.player_combo_json,
+            battle.enemy_combo_json,
             battle.id,
         ),
     )
@@ -922,6 +1330,7 @@ def reward_player(conn: sqlite3.Connection, player_id: int, xp: int, gold: int) 
         ),
     )
     conn.commit()
+    _check_and_award_achievements(conn, player_id)
     if levels_gained > 0:
         for lvl in range(prev_level + 1, new_level + 1):
             grant_case(conn, player_id, "Novice Case", 1)
@@ -965,12 +1374,84 @@ def delete_battle_message(conn: sqlite3.Connection, row_id: int) -> None:
     conn.commit()
 
 
+def list_battle_effects(conn: sqlite3.Connection, battle_id: int, target: str) -> list[sqlite3.Row]:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT * FROM battle_effects
+        WHERE battle_id = ? AND target = ?
+        """,
+        (battle_id, target),
+    )
+    return cursor.fetchall()
+
+
+def upsert_battle_effect(
+    conn: sqlite3.Connection,
+    battle_id: int,
+    target: str,
+    effect_type: str,
+    value: float,
+    duration: int,
+    max_stacks: int,
+) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, stacks, duration
+        FROM battle_effects
+        WHERE battle_id = ? AND target = ? AND effect_type = ?
+        """,
+        (battle_id, target, effect_type),
+    )
+    row = cursor.fetchone()
+    if row:
+        new_stacks = min(max_stacks, row["stacks"] + 1)
+        new_duration = max(duration, row["duration"])
+        cursor.execute(
+            """
+            UPDATE battle_effects
+            SET stacks = ?, duration = ?, value = ?, max_stacks = ?
+            WHERE id = ?
+            """,
+            (new_stacks, new_duration, value, max_stacks, row["id"]),
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO battle_effects (battle_id, target, effect_type, value, duration, stacks, max_stacks)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            (battle_id, target, effect_type, value, duration, max_stacks),
+        )
+    conn.commit()
+
+
+def tick_battle_effects(conn: sqlite3.Connection, battle_id: int) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, duration FROM battle_effects WHERE battle_id = ?",
+        (battle_id,),
+    )
+    rows = cursor.fetchall()
+    for row in rows:
+        new_duration = row["duration"] - 1
+        if new_duration <= 0:
+            cursor.execute("DELETE FROM battle_effects WHERE id = ?", (row["id"],))
+        else:
+            cursor.execute(
+                "UPDATE battle_effects SET duration = ? WHERE id = ?",
+                (new_duration, row["id"]),
+            )
+    conn.commit()
 def list_player_skills(conn: sqlite3.Connection, player_id: int) -> list[Skill]:
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT s.id, s.name, s.type, s.stamina_cost, s.damage_multiplier,
-               s.range, s.effect, s.rarity, s.hidden, s.description
+               s.range, s.effect, s.rarity, s.hidden, s.description,
+               s.effects_json, s.combo_tags_json,
+               ps.level, ps.copies
         FROM skills s
         JOIN player_skills ps ON ps.skill_id = s.id
         WHERE ps.player_id = ? AND ps.is_unlocked = 1
@@ -987,7 +1468,8 @@ def get_skill_by_name(conn: sqlite3.Connection, name: str) -> Skill | None:
     cursor.execute(
         """
         SELECT id, name, type, stamina_cost, damage_multiplier,
-               range, effect, rarity, hidden, description
+               range, effect, rarity, hidden, description,
+               effects_json, combo_tags_json
         FROM skills
         WHERE name = ?
         """,
@@ -997,6 +1479,37 @@ def get_skill_by_name(conn: sqlite3.Connection, name: str) -> Skill | None:
     if not row:
         return None
     return Skill(**row)
+
+
+def get_skill_by_id(conn: sqlite3.Connection, skill_id: int) -> Skill | None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, name, type, stamina_cost, damage_multiplier,
+               range, effect, rarity, hidden, description,
+               effects_json, combo_tags_json
+        FROM skills
+        WHERE id = ?
+        """,
+        (skill_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return Skill(**row)
+
+
+def get_player_skill_meta(conn: sqlite3.Connection, player_id: int, skill_id: int) -> sqlite3.Row | None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT level, copies
+        FROM player_skills
+        WHERE player_id = ? AND skill_id = ?
+        """,
+        (player_id, skill_id),
+    )
+    return cursor.fetchone()
 
 
 def player_has_skill(conn: sqlite3.Connection, player_id: int, skill_id: int) -> bool:
@@ -1055,6 +1568,12 @@ def list_shop_cases(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         """
     )
     return cursor.fetchall()
+
+
+def get_case_by_id(conn: sqlite3.Connection, case_id: int) -> sqlite3.Row | None:
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM cases WHERE id = ?", (case_id,))
+    return cursor.fetchone()
 
 
 def buy_case(conn: sqlite3.Connection, player_id: int, case_name: str) -> bool:
@@ -1128,12 +1647,36 @@ def open_case(conn: sqlite3.Connection, player_id: int, case_name: str) -> list[
         (player_id, row["id"]),
     )
     rewards = roll_case_rewards(conn, player_id, row)
-    cursor.executemany(
+    for skill in rewards:
+        apply_skill_reward(conn, player_id, skill.id)
+    _increment_cases_opened(conn, player_id, 1)
+    _check_and_award_achievements(conn, player_id)
+    conn.commit()
+    return rewards
+
+
+def open_case_by_id(conn: sqlite3.Connection, player_id: int, case_id: int) -> list[Skill] | None:
+    cursor = conn.cursor()
+    cursor.execute(
         """
-        INSERT OR IGNORE INTO player_skills (player_id, skill_id, is_unlocked)
-        VALUES (?, ?, 1)
+        SELECT c.*, pc.quantity
+        FROM cases c
+        JOIN player_cases pc ON pc.case_id = c.id
+        WHERE c.id = ? AND pc.player_id = ?
         """,
-        [(player_id, skill.id) for skill in rewards],
+        (case_id, player_id),
     )
+    row = cursor.fetchone()
+    if not row or row["quantity"] <= 0:
+        return None
+    cursor.execute(
+        "UPDATE player_cases SET quantity = quantity - 1 WHERE player_id = ? AND case_id = ?",
+        (player_id, row["id"]),
+    )
+    rewards = roll_case_rewards(conn, player_id, row)
+    for skill in rewards:
+        apply_skill_reward(conn, player_id, skill.id)
+    _increment_cases_opened(conn, player_id, 1)
+    _check_and_award_achievements(conn, player_id)
     conn.commit()
     return rewards

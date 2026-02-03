@@ -35,3 +35,29 @@ def skills_inline_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📘 Навыки", callback_data="skills:open")
     )
     return builder.as_markup()
+
+
+def skills_select_keyboard(skills: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for skill in skills:
+        builder.add(
+            InlineKeyboardButton(
+                text=f"{skill.name} ({skill.stamina_cost}⚡)",
+                callback_data=f"skill:{skill.id}",
+            )
+        )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def cases_open_keyboard(cases: list[dict]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for case in cases:
+        builder.add(
+            InlineKeyboardButton(
+                text=f"Открыть {case['name']} (x{case['quantity']})",
+                callback_data=f"case:open:{case['id']}",
+            )
+        )
+    builder.adjust(1)
+    return builder.as_markup()

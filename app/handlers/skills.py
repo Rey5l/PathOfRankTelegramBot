@@ -7,6 +7,7 @@ from app.db import (
     get_connection,
     get_player_by_telegram,
     get_skill_by_name,
+    get_player_skill_meta,
     list_player_skills,
     player_has_skill,
 )
@@ -24,6 +25,7 @@ def _skills_list_text(skills) -> str:
                 name=skill.name,
                 rarity=skill.rarity,
                 range_label=templates.range_label(skill.range),
+                level=skill.level,
             )
         )
     lines.append("ℹ️ Для деталей: /skills info Название")
@@ -58,6 +60,9 @@ async def cmd_skills(message: Message) -> None:
             await message.answer("🔒 Этот навык пока недоступен.")
             conn.close()
             return
+        meta = get_player_skill_meta(conn, player.id, skill.id)
+        level = meta["level"] if meta else 1
+        copies = meta["copies"] if meta else 0
         await message.answer(
             templates.skill_info_text(
                 name=skill.name,
@@ -68,6 +73,8 @@ async def cmd_skills(message: Message) -> None:
                 effect=skill.effect,
                 rarity=skill.rarity,
                 description=skill.description,
+                level=level,
+                copies=copies,
             )
         )
         conn.close()

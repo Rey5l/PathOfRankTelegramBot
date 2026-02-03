@@ -61,8 +61,8 @@ def skill_list_header() -> str:
     return "📘 Твои навыки"
 
 
-def skill_list_item(name: str, rarity: str, range_label: str) -> str:
-    return f"{rarity_label(rarity)} {name} · {range_label}"
+def skill_list_item(name: str, rarity: str, range_label: str, level: int) -> str:
+    return f"{rarity_label(rarity)} {name} Lv.{level} · {range_label}"
 
 
 def skill_info_text(
@@ -74,6 +74,8 @@ def skill_info_text(
     effect: str,
     rarity: str,
     description: str,
+    level: int,
+    copies: int,
 ) -> str:
     return (
         f"📕 Навык: {name}\n"
@@ -83,6 +85,7 @@ def skill_info_text(
         f"📏 Дальность: {range_label}\n"
         f"✨ Эффект: {effect}\n"
         f"{rarity_label(rarity)} Редкость: {rarity}\n"
+        f"📈 Уровень: {level} (осколки: {copies}/3)\n"
         f"📝 Описание: {description}"
     )
 
